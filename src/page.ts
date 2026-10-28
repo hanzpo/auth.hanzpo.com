@@ -10,6 +10,8 @@ const shell = (body: string) => `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>Sign in</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <style>
   :root { --bg: #fff; --fg: #111; --muted: #666; --line: #ddd; --btn: #111; --btn-fg: #fff; }
   @media (prefers-color-scheme: dark) {
