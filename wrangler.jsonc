@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hanzpo-auth",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "routes": [{ "pattern": "auth.hanzpo.com", "custom_domain": true }],
+  "vars": { "DOMAIN": "hanzpo.com" },
+  "observability": { "enabled": true }
+}
