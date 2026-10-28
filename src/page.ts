@@ -22,9 +22,9 @@ const shell = (body: string) => `<!doctype html>
   img { width: 64px; height: 64px; border-radius: 50%; }
   h1 { font-size: 20px; font-weight: 600; margin: 12px 0 4px; }
   p { margin: 0 0 24px; color: var(--muted); overflow-wrap: anywhere; }
-  a.btn { display: block; padding: 12px; border-radius: 10px; text-decoration: none; font-weight: 500;
-    background: var(--btn); color: var(--btn-fg); }
-  a.btn.plain { background: none; color: var(--fg); border: 1px solid var(--line); }
+  .btn { display: block; width: 100%; padding: 12px; border: 0; border-radius: 10px; text-decoration: none;
+    font: inherit; font-weight: 500; cursor: pointer; background: var(--btn); color: var(--btn-fg); }
+  .btn.plain { background: none; color: var(--fg); border: 1px solid var(--line); }
 </style>
 </head>
 <body><main>${body}</main></body>
@@ -44,7 +44,17 @@ export const signedOut = () =>
 <p>hanzpo.com</p>
 <a class="btn" href="/login">Sign in with Google</a>`);
 
-export const failed = (message: string) =>
+export const handoff = (action: string, token: string, back: string) =>
+  html(`<form method="post" action="${esc(action)}">
+<input type="hidden" name="token" value="${esc(token)}">
+<input type="hidden" name="return" value="${esc(back)}">
+<h1>Signing you in</h1>
+<p>${esc(new URL(action).hostname)}</p>
+<button class="btn" type="submit">Continue</button>
+</form>
+<script>document.forms[0].submit()</script>`);
+
+export const failed =(message: string) =>
   html(`<h1>Couldn't sign in</h1>
 <p>${esc(message)}</p>
 <a class="btn" href="/login">Try again</a>`, 400);

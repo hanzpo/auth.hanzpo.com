@@ -10,7 +10,10 @@ export interface Options {
 }
 
 export const AUTH_ORIGIN = "https://auth.hanzpo.com";
-export const COOKIE = "hanzpo_auth";
+export const COOKIE = "hanzpo_app";
+export const CALLBACK_PATH = "/.auth/callback";
+export const LOGOUT_PATH = "/.auth/logout";
+const MAX_AGE = 60 * 60 * 24 * 7;
 
 const enc = new TextEncoder();
 const ALG = { name: "ECDSA", namedCurve: "P-256" } as const;
@@ -41,6 +44,7 @@ export function readCookie(header: string | null, name: string): string | undefi
 export async function verifyToken(
   token: string,
   getKey: (kid: string) => Promise<CryptoKey | undefined>,
+  audience: string,
   now = Date.now() / 1000,
 ): Promise<User | null> {
   const [h, p, s] = token.split(".");
@@ -51,7 +55,7 @@ export async function verifyToken(
     const key = await getKey(head.kid);
     if (!key || !(await crypto.subtle.verify(SIG, key, b64urlDecode(s), enc.encode(`${h}.${p}`)))) return null;
     const c = decodeJson(p);
-    if (c.iss !== AUTH_ORIGIN || typeof c.exp !== "number" || c.exp <= now) return null;
+    if (c.iss !== AUTH_ORIGIN || c.aud !== audience || typeof c.exp !== "number" || c.exp <= now) return null;
     if (typeof c.sub !== "string" || typeof c.email !== "string") return null;
     return {
       sub: c.sub,
@@ -79,15 +83,39 @@ async function remoteKey(kid: string): Promise<CryptoKey | undefined> {
   return jwks.keys.get(kid);
 }
 
+const isLocal = (host: string) => host === "localhost" || host === "127.0.0.1";
+
 export async function getUser(req: Request, opts: Options = {}): Promise<User | null> {
   const host = new URL(req.url).hostname;
-  if (opts.devEmail && (host === "localhost" || host === "127.0.0.1")) return { sub: "dev", email: opts.devEmail };
+  if (opts.devEmail && isLocal(host)) return { sub: "dev", email: opts.devEmail };
   const token = readCookie(req.headers.get("cookie"), COOKIE);
-  return token ? verifyToken(token, remoteKey) : null;
+  return token ? verifyToken(token, remoteKey, host) : null;
 }
 
 export const loginUrl = (returnTo: string) => `${AUTH_ORIGIN}/login?${new URLSearchParams({ return: returnTo })}`;
-export const logoutUrl = (returnTo: string) => `${AUTH_ORIGIN}/logout?${new URLSearchParams({ return: returnTo })}`;
+
+function redirect(location: string, cookie: string) {
+  return new Response(null, { status: 302, headers: { location, "set-cookie": cookie, "cache-control": "no-store" } });
+}
+
+export async function handleAuth(req: Request): Promise<Response | null> {
+  const url = new URL(req.url);
+  if (url.pathname === CALLBACK_PATH && req.method === "POST") {
+    const form = await req.formData();
+    const token = String(form.get("token") ?? "");
+    let back = "/";
+    try {
+      const r = new URL(String(form.get("return") ?? "/"), url);
+      if (r.origin === url.origin) back = r.pathname + r.search + r.hash;
+    } catch {}
+    if (!(await verifyToken(token, remoteKey, url.hostname))) return new Response("Sign-in failed", { status: 400 });
+    return redirect(back, `${COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${MAX_AGE}`);
+  }
+  if (url.pathname === LOGOUT_PATH) {
+    return redirect(`${AUTH_ORIGIN}/logout?${new URLSearchParams({ return: `${url.origin}/` })}`, `${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`);
+  }
+  return null;
+}
 
 export async function requireUser(req: Request, opts: Options & { allow?: string[] } = {}): Promise<User | Response> {
   const user = await getUser(req, opts);

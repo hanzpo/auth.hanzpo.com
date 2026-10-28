@@ -1,5 +1,5 @@
-import { AUTH_ORIGIN, COOKIE, b64urlEncode, decodeJson, readCookie, verifyToken, type User } from "../client/hanzpo-auth";
-import { failed, signedIn, signedOut } from "./page";
+import { AUTH_ORIGIN, CALLBACK_PATH, b64urlEncode, decodeJson, readCookie, verifyToken, type User } from "../client/hanzpo-auth";
+import { failed, handoff, signedIn, signedOut } from "./page";
 
 export interface Env {
   DOMAIN: string;
@@ -8,8 +8,11 @@ export interface Env {
   SIGNING_KEY: string;
 }
 
+const SESSION = "hanzpo_session";
+const LEGACY = "hanzpo_auth";
 const STATE = "auth_state";
-const MAX_AGE = 60 * 60 * 24 * 30;
+const SESSION_AGE = 60 * 60 * 24 * 30;
+const APP_AGE = 60 * 60 * 24 * 7;
 const enc = new TextEncoder();
 const ALG = { name: "ECDSA", namedCurve: "P-256" } as const;
 
@@ -41,8 +44,9 @@ function signingKey(env: Env): Promise<SigningKey> {
 
 const b64json = (o: unknown) => b64urlEncode(enc.encode(JSON.stringify(o)));
 
-async function signToken(user: User, key: SigningKey, now: number): Promise<string> {
-  const data = `${b64json({ alg: "ES256", typ: "JWT", kid: key.kid })}.${b64json({ ...user, iss: AUTH_ORIGIN, iat: now, exp: now + MAX_AGE })}`;
+async function signToken(user: User, key: SigningKey, aud: string, ttl: number): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const data = `${b64json({ alg: "ES256", typ: "JWT", kid: key.kid })}.${b64json({ ...user, iss: AUTH_ORIGIN, aud, iat: now, exp: now + ttl })}`;
   const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key.priv, enc.encode(data));
   return `${data}.${b64urlEncode(new Uint8Array(sig))}`;
 }
@@ -71,28 +75,36 @@ function redirect(location: string, cookies: string[] = []) {
   return new Response(null, { status: 302, headers });
 }
 
-async function sessionUser(req: Request, key: SigningKey): Promise<User | null> {
-  const token = readCookie(req.headers.get("cookie"), COOKIE);
-  return token ? verifyToken(token, async (kid) => (kid === key.kid ? key.pub : undefined)) : null;
-}
-
 const random = () => b64urlEncode(crypto.getRandomValues(new Uint8Array(24)));
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     const key = await signingKey(env);
-    const domain = url.hostname === env.DOMAIN || url.hostname.endsWith(`.${env.DOMAIN}`) ? env.DOMAIN : undefined;
     const back = safeReturn(url.searchParams.get("return"), env.DOMAIN) ?? `${url.origin}/`;
+
+    const sessionUser = async () => {
+      const token = readCookie(req.headers.get("cookie"), SESSION);
+      return token ? verifyToken(token, async (kid) => (kid === key.kid ? key.pub : undefined), url.hostname) : null;
+    };
+
+    const sendTo = async (user: User, to: string, cookies: string[] = []) => {
+      const target = new URL(to);
+      if (target.origin === url.origin) return redirect(to, cookies);
+      const res = handoff(`${target.origin}${CALLBACK_PATH}`, await signToken(user, key, target.hostname, APP_AGE), to);
+      for (const c of cookies) res.headers.append("set-cookie", c);
+      return res;
+    };
 
     switch (url.pathname) {
       case "/": {
-        const user = await sessionUser(req, key);
+        const user = await sessionUser();
         return user ? signedIn(user) : signedOut();
       }
 
       case "/login": {
-        if (!url.searchParams.has("switch") && (await sessionUser(req, key))) return redirect(back);
+        const user = url.searchParams.has("switch") ? null : await sessionUser();
+        if (user) return sendTo(user, back);
         const state = random();
         const nonce = random();
         const params = new URLSearchParams({
@@ -151,14 +163,15 @@ export default {
           ...(typeof c.name === "string" && { name: c.name }),
           ...(typeof c.picture === "string" && { picture: c.picture }),
         };
-        return redirect(safeReturn(pending.back, env.DOMAIN) ?? `${url.origin}/`, [
+        return sendTo(user, safeReturn(pending.back, env.DOMAIN) ?? `${url.origin}/`, [
           cookie(STATE, "", 0),
-          cookie(COOKIE, await signToken(user, key, now), MAX_AGE, domain),
+          cookie(LEGACY, "", 0, env.DOMAIN),
+          cookie(SESSION, await signToken(user, key, url.hostname, SESSION_AGE), SESSION_AGE),
         ]);
       }
 
       case "/logout":
-        return redirect(back, [cookie(COOKIE, "", 0, domain)]);
+        return redirect(back, [cookie(SESSION, "", 0), cookie(LEGACY, "", 0, env.DOMAIN)]);
 
       case "/me": {
         const origin = req.headers.get("origin");
@@ -167,7 +180,7 @@ export default {
           headers["access-control-allow-origin"] = origin;
           headers["access-control-allow-credentials"] = "true";
         }
-        const user = await sessionUser(req, key);
+        const user = await sessionUser();
         return new Response(JSON.stringify(user), { status: user ? 200 : 401, headers });
       }
 
